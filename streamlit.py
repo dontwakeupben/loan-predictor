@@ -69,7 +69,7 @@ st.markdown("""
 # Load model
 @st.cache_resource
 def load_model():
-    return joblib.load('stacking_pipeline.joblib')
+    return joblib.load('stacking_pipeline.pkl')
 
 # Header
 st.markdown("""
@@ -83,17 +83,7 @@ st.markdown("""
 try:
     pipeline = load_model()
     
-    # Check if the model has feature_names_in_ attribute
-    if hasattr(pipeline, 'feature_names_in_'):
-        st.write("Model expects these features:")
-        st.write(list(pipeline.feature_names_in_))
-    
-    # If it's a pipeline, check the final estimator
-    elif hasattr(pipeline, 'named_steps'):
-        final_step = list(pipeline.named_steps.values())[-1]
-        if hasattr(final_step, 'feature_names_in_'):
-            st.write("Model expects these features:")
-            st.write(list(final_step.feature_names_in_))
+
     
     st.success("✅ AI Model loaded successfully!")
     
@@ -103,9 +93,6 @@ except Exception as e:
 
 # Sidebar for model info and tips
 with st.sidebar:
-    st.markdown("### 🤖 Model Information")
-    st.info("**Model Type:** Stacking Ensemble\n**Accuracy:** 95.2%\n**Last Updated:** Today")
-    
     st.markdown("### 💡 Tips for Approval")
     st.markdown("""
     - **Credit Score:** Higher is better (700+)
@@ -130,7 +117,7 @@ with st.sidebar:
         - No previous defaults
         """)
     
-    with st.expander("� Medium Risk"):
+    with st.expander("🟡 Medium Risk"):
         st.markdown("""
         **What it means:**
         - Debt-to-income ratio 20-40%
@@ -168,9 +155,26 @@ with st.sidebar:
         - May require secured loan products only
         """)
     
-    st.markdown("### �📊 Quick Stats")
-    approval_rate = 68.5
-    st.metric("Overall Approval Rate", f"{approval_rate:.1f}%")
+    st.markdown("### 📊 Quick Stats")
+    
+    # Calculate dynamic approval rate from session history
+    if 'application_history' in st.session_state and st.session_state.application_history:
+        history_df = pd.DataFrame(st.session_state.application_history)
+        total_applications = len(history_df)
+        approved_applications = len(history_df[history_df['result'] == 'Approved'])
+        approval_rate = (approved_applications / total_applications) * 100 if total_applications > 0 else 0
+        
+        st.metric(
+            "Overall Approval Rate", 
+            f"{approval_rate:.1f}%", 
+            delta=f"{approved_applications}/{total_applications} applications"
+        )
+    else:
+        st.metric(
+            "Overall Approval Rate", 
+            "No data yet", 
+            delta="Submit applications to see rate"
+        )
     
     # Credit score ranges
     st.markdown("### 📊 Credit Score Guide")
@@ -428,12 +432,11 @@ with tab1:
                 with st.spinner('🤖 AI is analyzing your application...'):
                     time.sleep(1.5)  # Add dramatic effect
                     
-                    # Create input DataFrame with preprocessing
+                    # Create input DataFrame with the same preprocessing as training
                     input_data = pd.DataFrame({
                         'person_age': [person_age],
                         'person_education': [person_education],
                         'person_income': [person_income],
-                        'person_emp_exp': [person_emp_exp],
                         'loan_amnt': [loan_amnt],
                         'loan_int_rate': [loan_int_rate],
                         'loan_percent_income': [loan_percent_income],
@@ -444,7 +447,8 @@ with tab1:
                         'person_home_ownership_RENT': [1 if person_home_ownership == 'Rent' else 0]
                     })
                     
-                    # Apply the same preprocessing as in the notebook
+                    # Apply the same preprocessing steps as in training:
+                    
                     # 1. Binary encoding for previous_loan_defaults_on_file
                     input_data['previous_loan_defaults_on_file'] = input_data['previous_loan_defaults_on_file'].map({'No': 0, 'Yes': 1})
                     
@@ -458,13 +462,16 @@ with tab1:
                     }
                     input_data['person_education'] = input_data['person_education'].map(education_mapping)
                     
-                    # 3. Ensure we have exactly the columns the model expects (in correct order)
-                    # Based on your notebook's final feature set after dropping columns
+                    # 3. Handle age outliers (same as training)
+                    median_age = 26  # Use the same median from training data
+                    input_data['person_age'] = input_data['person_age'].apply(lambda x: median_age if x > 100 else x)
+                    
+                    # 4. Ensure we have exactly the columns the model expects (after feature pruning)
+                    # These are the final features after dropping columns in training
                     expected_columns = [
                         'person_age', 
                         'person_education', 
                         'person_income', 
-                        'person_emp_exp',
                         'loan_amnt', 
                         'loan_int_rate', 
                         'loan_percent_income', 
@@ -475,23 +482,22 @@ with tab1:
                         'person_home_ownership_RENT'
                     ]
                     
-                    # Reorder columns to match training data
+                    # 5. Reorder columns to match training data
                     input_data_final = input_data[expected_columns]
                     
                     # Verify the final shape matches expectations
                     print(f"Final input shape: {input_data_final.shape}")
                     print(f"Final columns: {list(input_data_final.columns)}")
                     
-                    # Make prediction using the pipeline (which handles PCA internally)
+                    # Make prediction using the pipeline
+                    # Note: The pipeline should handle scaling internally if it was saved with a scaler
                     prediction = pipeline.predict(input_data_final)
-                    proba = pipeline.predict_proba(input_data_final)[0][1] * 100
                     
                     # Enhanced results display
                     if prediction[0] == 1:
                         st.markdown(f"""
                         <div class="prediction-approved">
                             <h2>🎉 LOAN APPROVED!</h2>
-                            <h3>Approval Probability: {proba:.1f}%</h3>
                             <p>Congratulations! Your loan application has been approved by our AI system.</p>
                         </div>
                         """, unsafe_allow_html=True)
@@ -502,62 +508,63 @@ with tab1:
                         st.markdown(f"""
                         <div class="prediction-rejected">
                             <h2>❌ LOAN DECLINED</h2>
-                            <h3>Approval Probability: {proba:.1f}%</h3>
                             <p>Unfortunately, your application doesn't meet our current criteria.</p>
                         </div>
                         """, unsafe_allow_html=True)
+                
+                # Detailed breakdown
+                st.markdown("### 📋 Application Summary")
+                
+                summary_col1, summary_col2 = st.columns(2)
+                
+                with summary_col1:
+                    st.markdown("**Personal Details:**")
+                    st.write(f"• Age: {person_age} years")
+                    st.write(f"• Education: {person_education}")
+                    st.write(f"• Income: ${person_income:,}")
                     
-                    # Detailed breakdown
-                    st.markdown("### 📋 Application Summary")
-                    
-                    summary_col1, summary_col2 = st.columns(2)
-                    
-                    with summary_col1:
-                        st.markdown("**Personal Details:**")
-                        st.write(f"• Age: {person_age} years")
-                        st.write(f"• Education: {person_education}")
-                        st.write(f"• Income: ${person_income:,}")
-                        st.write(f"• Experience: {person_emp_exp} years")
-                        
-                    with summary_col2:
-                        st.markdown("**Loan Details:**")
-                        st.write(f"• Amount: ${loan_amnt:,}")
-                        st.write(f"• Purpose: {loan_intent}")
-                        st.write(f"• Interest Rate: {loan_int_rate}%")
+                with summary_col2:
+                    st.markdown("**Loan Details:**")
+                    st.write(f"• Amount: ${loan_amnt:,}")
+                    st.write(f"• Purpose: {loan_intent}")
+                    st.write(f"• Interest Rate: {loan_int_rate}%")
+                    if person_income > 0:
+                        monthly_payment = (loan_amnt * (loan_int_rate/100/12)) / (1 - (1 + loan_int_rate/100/12)**(-12*5)) if loan_int_rate > 0 else loan_amnt/60
                         st.write(f"• Monthly Payment: ${monthly_payment:.0f}")
-                    
-                    # Show processed data for debugging
-                    with st.expander("🔍 See processed input data (for verification)"):
-                        st.markdown("**Data sent to the model:**")
-                        st.dataframe(input_data_final, use_container_width=True)
-                        st.markdown("**Feature descriptions:**")
-                        st.text(f"""
-                        • person_age: {person_age}
-                        • person_education: {person_education} → {education_mapping[person_education]}
-                        • person_income: {person_income}
-                        • person_emp_exp: {person_emp_exp}
-                        • loan_amnt: {loan_amnt}
-                        • loan_int_rate: {loan_int_rate}
-                        • loan_percent_income: {loan_percent_income:.4f}
-                        • cb_person_cred_hist_length: {cb_person_cred_hist_length}
-                        • credit_score: {credit_score}
-                        • previous_loan_defaults_on_file: {previous_loan_defaults_on_file} → {input_data_final['previous_loan_defaults_on_file'].iloc[0]}
-                        • person_home_ownership_OWN: {input_data_final['person_home_ownership_OWN'].iloc[0]}
-                        • person_home_ownership_RENT: {input_data_final['person_home_ownership_RENT'].iloc[0]}
-                        """)
-                    
-                    # Store in session state for history
-                    if 'application_history' not in st.session_state:
-                        st.session_state.application_history = []
-                    
-                    st.session_state.application_history.append({
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'amount': loan_amnt,
-                        'purpose': loan_intent,
-                        'result': 'Approved' if prediction[0] == 1 else 'Declined',
-                        'probability': proba  # Store as percentage (0-100) for display
-                    })
-                    
+                
+                # Show processed data for debugging
+                with st.expander("🔍 See processed input data (for verification)"):
+                    st.markdown("**Data sent to the model:**")
+                    st.dataframe(input_data_final, use_container_width=True)
+                    st.markdown("**Feature descriptions:**")
+                    st.text(f"""
+                    • person_age: {person_age}
+                    • person_education: {person_education} → {education_mapping[person_education]}
+                    • person_income: {person_income}
+                    • loan_amnt: {loan_amnt}
+                    • loan_int_rate: {loan_int_rate}
+                    • loan_percent_income: {loan_percent_income:.4f}
+                    • cb_person_cred_hist_length: {cb_person_cred_hist_length}
+                    • credit_score: {credit_score}
+                    • previous_loan_defaults_on_file: {previous_loan_defaults_on_file} → {input_data_final['previous_loan_defaults_on_file'].iloc[0]}
+                    • person_home_ownership_OWN: {input_data_final['person_home_ownership_OWN'].iloc[0]}
+                    • person_home_ownership_RENT: {input_data_final['person_home_ownership_RENT'].iloc[0]}
+                    """)
+                
+                # Store in session state for history
+                if 'application_history' not in st.session_state:
+                    st.session_state.application_history = []
+
+                st.session_state.application_history.append({
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'amount': loan_amnt,
+                    'purpose': loan_intent,
+                    'result': 'Approved' if prediction[0] == 1 else 'Declined'
+                })
+
+                # Remove this line that causes immediate refresh:
+                # st.rerun()
+                
             except Exception as e:
                 st.error(f"❌ Prediction failed: {str(e)}")
                 st.error("Please check that all fields are filled correctly.")
@@ -659,8 +666,7 @@ with tab3:
                 "timestamp": "Date/Time",
                 "amount": st.column_config.NumberColumn("Loan Amount", format="$%d"),
                 "purpose": "Purpose",
-                "result": "Result",
-                "probability": st.column_config.NumberColumn("Probability (%)", format="%.1f%%")
+                "result": "Result"
             }
         )
         
